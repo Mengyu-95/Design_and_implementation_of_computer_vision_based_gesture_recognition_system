@@ -1,0 +1,307 @@
+import cv2
+import mediapipe as mp
+import numpy as np
+import math
+
+class Hand:
+    def __init__(self):
+        # 创建对象(加载模型--加载特征)
+        self.hands = mp.solutions.hands.Hands()
+        # 存储左手的关键点
+        self.left_handmark = []
+        # 存储右手的关键点
+        self.right_handmark = []
+        # 每一帧的图像
+        self.frame = None
+        # 存储手指尖的序号
+        self.tip_nums = [4, 8, 12, 16, 20]
+        # 存放手的类型
+        self.hands_type = []
+        # 加载爱心图片
+        self.love_img = cv2.imread('./LOVE.png')
+        self.tip_l_x = 0
+        self.tip_l_y = 0
+        self.tip_r_x = 0
+        self.tip_r_y = 0
+        self.tip2_l_x = 0
+        self.tip2_l_y = 0
+        self.tip2_r_x = 0
+        self.tip2_r_y = 0
+        self.finger_status_love = np.zeros((10,), dtype=np.bool_)
+        ratio = 0.3
+        self.LOVE_w = int(self.love_img.shape[0] * ratio)
+        self.LOVE_h = int(self.love_img.shape[0] * ratio)
+        self.scale_LOVE = cv2.resize(self.love_img, dsize=(self.LOVE_w, self.LOVE_h))
+        self.scale_mask = cv2.resize(self.draw_LOVE_make(self.scale_LOVE), dsize=(self.LOVE_w, self.LOVE_h))
+
+    def process(self, frame):
+        self.frame = frame
+        # 获取关键点
+        right_hand_landmark_list, left_hand_landmark_list = self.get_landmark(frame)
+        if right_hand_landmark_list is None and left_hand_landmark_list is None:
+            return
+        # 左手关键点存在获取左手关键点
+        if left_hand_landmark_list:
+            left_handmark = left_hand_landmark_list.landmark
+            self.left_handmark = left_handmark
+            # 绘制样式
+            self.draw_style(frame, left_hand_landmark_list, isRight=False)
+        # 右手关键点存在获取右手关键点
+        if right_hand_landmark_list:
+            right_handmark = right_hand_landmark_list.landmark
+            self.right_handmark = right_handmark
+            # 绘制样式
+            self.draw_style(frame, right_hand_landmark_list, isRight=True)
+        # 统计双手的数字
+        mul_hand_num_cnt = 0
+        for hand_type in self.hands_type:
+            isRight = hand_type == "Right"
+            cnt = self.gesture_num_detect(isRight)
+            mul_hand_num_cnt += cnt
+            # OK手势
+            self.get_OK(isRight)
+            # 点赞手势
+            self.get_NB(isRight)
+            # 比心手势
+            self.get_LOVE(frame,isRight)
+        self.show_info(mul_hand_num_cnt, org=(300, 100))
+
+
+    def gesture_num_detect(self, isRight=True):
+        """
+        方式1:
+        大拇指：
+        使用x值且区分左右手
+        左手x4>x2，右手x4<x2
+
+        其他拇指：
+        使用y值
+        y8 > y6 弯曲
+        y12 > y10 弯曲
+        """
+        finger_status = np.zeros((5,), dtype=np.bool_)
+        for idx, num in enumerate(self.tip_nums):
+            if idx == 0:
+                if isRight:
+                    tip = self.indexCvPoint(num, isRight=isRight)[0]
+                    other = self.indexCvPoint(num - 2, isRight=isRight)[0]
+                    finger_status[idx] = tip < other
+                else:
+                    tip = self.indexCvPoint(num, isRight=isRight)[0]
+                    other = self.indexCvPoint(num - 2, isRight=isRight)[0]
+                    finger_status[idx] = tip > other
+                continue
+
+            else:
+                tip = self.indexCvPoint(num,isRight=isRight)[1]
+                other = self.indexCvPoint(num - 2,isRight=isRight)[1]
+                finger_status[idx] = tip < other
+        cnt = np.sum(finger_status)
+        if isRight:
+            self.show_info(cnt, org=(150, 100))
+        else:
+            self.show_info(cnt, org=(50, 100))
+        return cnt
+    # cv2.putText(self.frame, str(cnt), org=(50, 100), fontFace = cv2.FONT_ITALIC, fontScale = 3,color = (0, 0, 255), thickness = 2)
+
+    def get_landmark(self, frame):
+        """
+        获取关键点
+        """
+        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # Processes an RGB image and returns the
+        result = self.hands.process(frame_bgr)
+        multi_hand_landmarks = result.multi_hand_landmarks
+        # 如果没有检测到关键点直接返回
+        right_hand_landmark_list, left_hand_landmark_list = [], []
+        if multi_hand_landmarks is None:
+            return right_hand_landmark_list, left_hand_landmark_list
+        hands_type = []
+        self.hands_type = hands_type
+        for handedness in result.multi_handedness:
+            for cls in handedness.classification:
+                if cls.label not in hands_type:
+                    hands_type.append(cls.label)
+        for idx, hand_type in enumerate(hands_type):
+            isRight = hand_type == "Right"
+            if isRight:
+                right_hand_landmark_list = multi_hand_landmarks[idx]
+            else:
+                left_hand_landmark_list = multi_hand_landmarks[idx]
+        return right_hand_landmark_list, left_hand_landmark_list
+
+    def draw_style(self, frame, hand_landmarks, isRight=True):
+        # 参数1：绘制在什么地方
+        # 参数2：连接的关键点
+        # 参数3：关键点的序号连接
+        # 参数4: 关键点的样式
+        landmark_style = mp.solutions.drawing_utils.DrawingSpec(color=(0, 0, 0))
+        line_style = mp.solutions.drawing_utils.DrawingSpec(color=(224, 224, 224))
+        conn = mp.solutions.hands_connections.HAND_CONNECTIONS
+        mp.solutions.drawing_utils.draw_landmarks(frame,hand_landmarks,conn,landmark_style,line_style)
+        h, w, _ = frame.shape
+        # 因为返回的x, y值是在0-1之间(做了归一化处理)，需要还原到屏幕的对应的坐标
+        for num, lm in enumerate(hand_landmarks.landmark):
+            x = int(lm.x * w)
+            y = int(lm.y * h)
+            # Can't parse 'org'. Sequence item with
+            cv2.putText(frame, str(num), org=(x - 6,y), fontFace=cv2.FONT_ITALIC, fontScale=0.4,color=(0, 0, 0), thickness=1)
+
+    def indexCvPoint(self, idx, isRight=True):
+        """
+        通过索引将坐标转换为对应的屏幕位置
+        """
+        h, w, _ = self.frame.shape
+        if isRight:
+            lm = self.right_handmark[idx]
+        else:
+            lm = self.left_handmark[idx]
+        x = int(lm.x * w)
+        y = int(lm.y * h)
+        return x, y
+
+    def show_info(self, info, org=(50, 100)):
+        cv2.putText(self.frame, str(info), org=org, fontFace=cv2.FONT_ITALIC, fontScale=3, color=(0,0, 255),thickness=2)
+
+    def get_OK(self, isRight=True):
+        """
+        获取ok手势
+        """
+        finger_status_ok = np.zeros((5,), dtype=np.bool_)
+        for idx, num in enumerate(self.tip_nums):
+            if idx == 0:
+                tip1_x = self.indexCvPoint(num, isRight=isRight)[0]
+                tip1_y = self.indexCvPoint(num, isRight=isRight)[1]
+            elif idx == 1:
+                tip2_x = self.indexCvPoint(num, isRight=isRight)[0]
+                tip2_y = self.indexCvPoint(num, isRight=isRight)[1]
+            else:
+                tip = self.indexCvPoint(num, isRight=isRight)[1]
+                other = self.indexCvPoint(num - 2, isRight=isRight)[1]
+                finger_status_ok[idx] = tip < other
+        if math.sqrt((tip2_x-tip1_x)**2+(tip2_y-tip1_y)**2) < 10:
+            finger_status_ok[0] = True
+            finger_status_ok[1] = True
+        cnt_ok = np.sum(finger_status_ok)
+        if cnt_ok == 5:
+            cv2.putText(self.frame, 'OK', org=(400, 100), fontFace = cv2.FONT_ITALIC, fontScale = 3,color = (0, 0, 255), thickness = 2)
+
+    def get_NB(self, isRight=True):
+        """
+        获取点赞手势
+        """
+        finger_status_nb = np.zeros((5,), dtype=np.bool_)
+        for idx, num in enumerate(self.tip_nums):
+            if idx == 0:
+                tip = self.indexCvPoint(num, isRight=isRight)[1]
+                other = self.indexCvPoint(num - 2, isRight=isRight)[1]
+                finger_status_nb[idx] = tip < other
+            else:
+                tip_x = self.indexCvPoint(num, isRight=isRight)[0]
+                other_x = self.indexCvPoint(num - 3, isRight=isRight)[0]
+                tip_y = self.indexCvPoint(num, isRight=isRight)[1]
+                other_y = self.indexCvPoint(num - 3, isRight=isRight)[1]
+                finger_status_nb[idx] = math.sqrt((tip_x-other_x)**2+(tip_y-other_y)**2) < 50
+        cnt_ok = np.sum(finger_status_nb)
+        if cnt_ok == 5:
+            cv2.putText(self.frame, "NB", org=(400, 200), fontFace = cv2.FONT_ITALIC, fontScale = 3,color = (0, 0, 255), thickness = 2)
+
+    def get_LOVE(self,frame,isRight):
+        """
+        获取爱心手势
+        左右手拇指食指并拢向下
+        其他手指向下
+        """
+        for idx, num in enumerate(self.tip_nums):
+            if idx == 0:
+                # 左手
+                if isRight == False:
+                    self.tip_l_x = self.indexCvPoint(num, isRight=False)[0]
+                    self.tip_l_y = self.indexCvPoint(num, isRight=False)[1]
+                    other_l_y = self.indexCvPoint(num - 3, isRight=False)[1]
+                    self.finger_status_love[idx] = self.tip_l_y > other_l_y
+                # 右手
+                else:
+                    self.tip_r_x = self.indexCvPoint(num, isRight=True)[0]
+                    self.tip_r_y = self.indexCvPoint(num, isRight=True)[1]
+                    other_r_y = self.indexCvPoint(num - 3, isRight=True)[1]
+                    self.finger_status_love[idx+5] = self.tip_r_y > other_r_y
+                # 拇指并拢
+                if (self.tip_l_x != 0) and (self.tip_r_x != 0) and (self.tip_l_y != 0) and (self.tip_r_y != 0):
+                    self.finger_status_love[idx] = math.sqrt((self.tip_l_x - self.tip_r_x) ** 2 + (self.tip_l_y - self.tip_r_y) ** 2) < 25
+            elif idx == 1:
+                # 左手
+                if isRight == False:
+                    self.tip2_l_x = self.indexCvPoint(num, isRight=False)[0]
+                    self.tip2_l_y = self.indexCvPoint(num, isRight=False)[1]
+                    other2_l_y = self.indexCvPoint(num - 2, isRight=False)[1]
+                    self.finger_status_love[idx] = self.tip2_l_y > other2_l_y
+                # 右手
+                else:
+                    self.tip2_r_x = self.indexCvPoint(num, isRight=True)[0]
+                    self.tip2_r_y = self.indexCvPoint(num, isRight=True)[1]
+                    other2_r_y = self.indexCvPoint(num - 2, isRight=True)[1]
+                    self.finger_status_love[idx + 5] = self.tip2_r_y > other2_r_y
+                # 拇指并拢
+                if (self.tip2_l_x != 0) and (self.tip2_r_x != 0) and (self.tip2_l_y != 0) and (self.tip2_r_y != 0):
+                    self.finger_status_love[idx] = math.sqrt((self.tip2_l_x - self.tip2_r_x) ** 2 + (self.tip2_l_y - self.tip2_r_y) ** 2) < 25
+            else:
+                # 左手
+                if isRight == False:
+                    tip_l_y = self.indexCvPoint(num, isRight=False)[1]
+                    other_l_y = self.indexCvPoint(num - 2, isRight=False)[1]
+                    self.finger_status_love[idx] = tip_l_y > other_l_y
+                # 右手
+                else:
+                    tip_r_y = self.indexCvPoint(num, isRight=True)[1]
+                    other_r_y = self.indexCvPoint(num - 2, isRight=True)[1]
+                    self.finger_status_love[idx + 5] = tip_r_y > other_r_y
+        cnt_love = np.sum(self.finger_status_love)
+        print(cnt_love)
+        if cnt_love == 10:
+            self.draw_LOVE(frame)
+
+    def draw_LOVE(self, frame):
+        """
+        打印爱心
+        """
+        # 计算左手和右手拇指和食指的中心位置
+        left_thumb_x, left_thumb_y = self.indexCvPoint(self.tip_nums[0], isRight=False)
+        left_index_x, left_index_y = self.indexCvPoint(self.tip_nums[1], isRight=False)
+        right_thumb_x, right_thumb_y = self.indexCvPoint(self.tip_nums[0], isRight=True)
+        right_index_x, right_index_y = self.indexCvPoint(self.tip_nums[1], isRight=True)
+
+        # 计算双手拇指和食指的中心位置
+        center_x = int((left_thumb_x + left_index_x + right_thumb_x + right_index_x) / 4)
+        center_y = int((left_thumb_y + left_index_y + right_thumb_y + right_index_y) / 4)
+
+        # 计算心形的起始位置
+        start_x = center_x - self.LOVE_w // 2
+        start_y = center_y - self.LOVE_h // 2
+
+        for col in range(self.LOVE_w):
+            for row in range(self.LOVE_h):
+                if self.scale_mask[row][col] == 255:
+                    x = start_x + col
+                    y = start_y + row
+                    if 0 <= x < frame.shape[1] and 0 <= y < frame.shape[0]:
+                        frame[y][x] = self.scale_LOVE[row][col]
+
+    def draw_LOVE_make(self,scale_img):
+        LOVE_gray = cv2.cvtColor(scale_img, cv2.COLOR_BGR2GRAY)
+        retval, LOVE_binary = cv2.threshold(LOVE_gray, 100, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        contours, hierarchy = cv2.findContours(LOVE_binary, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        mask = np.zeros_like(LOVE_binary)
+
+        # # 创建仿射变换矩阵
+        # translation_matrix = np.float32([[2, 6, -60], [6, 1, 0]])
+        # # 对轮廓进行仿射变换
+        # shifted_contours = [cv2.transform(contour, translation_matrix) for contour in contours]
+        # cv2.drawContours(mask, shifted_contours, -1, color=255, thickness=100)
+
+        # 修改轮廓坐标
+        #shifted_contours = [np.array(contour) + [-50, -50] for contour in contours]
+
+        # cv2.drawContours(mask, contours, -1, color=255, thickness=cv2.FILLED)
+        cv2.drawContours(mask, contours, -1, color=255, thickness=180)
+        return mask
